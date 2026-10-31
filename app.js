@@ -2,19 +2,19 @@
   'use strict';
   const QUESTIONS = Array.isArray(window.QUESTIONS) ? window.QUESTIONS : [];
   const byId = new Map(QUESTIONS.map(q => [q.id, q]));
-  const TYPES = ['单选', '判断', '简答', '计算', '论述'];
+  const TYPES = ['单选', '判断', '填空', '简答', '计算', '论述'];
   // 未指定数量的组织学计算、论述暂各抽 1 题，可在这里调整。
   const EXAM_STRUCTURE = {
     '组织学': { '单选': 10, '判断': 10, '简答': 6, '计算': 1, '论述': 1 },
-    '物理': { '单选': 10, '判断': 10, '计算': 8 },
+    '物理': { '单选': 10, '判断': 10, '大题': 8 },
     '测量': { '计算': 4 }
   };
   const KEY = 'xiaokan-quiz-v1';
   const $ = id => document.getElementById(id);
   const h = value => String(value ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]);
-  const objective = q => ['单选', '判断'].includes(q.type);
+  const objective = q => q.answerMode === 'choice';
   const answerIndex = q => q.options.findIndex((o, i) => q.answer.trim() === String.fromCharCode(65 + i) || q.answer.trim() === o);
-  const blankState = () => ({ version: 1, view: 'practice', subject: '组织学', type: '全部', order: 'sequential', records: {}, wrong: {}, sessions: {}, exams: {} });
+  const blankState = () => ({ version: 1, view: 'practice', subject: '组织学', chapter: '全部', type: '全部', order: 'sequential', records: {}, wrong: {}, sessions: {}, exams: {} });
   let state = blankState();
   let storageMessage = '';
   try {
@@ -31,6 +31,7 @@
   if (!['practice', 'wrong', 'exam'].includes(state.view)) state.view = 'practice';
   if (!EXAM_STRUCTURE[state.subject]) state.subject = '组织学';
   if (!['sequential', 'random'].includes(state.order)) state.order = 'sequential';
+  if (!['全部', '7', '8', '9', '10'].includes(state.chapter)) state.chapter = '全部';
   function save() {
     try { localStorage.setItem(KEY, JSON.stringify(state)); }
     catch (_) {
@@ -81,6 +82,8 @@
     $('type').innerHTML = '<option value="全部">全部题型</option>' + available.map(t => `<option value="${h(t)}">${h(t)}</option>`).join('');
     $('type').value = state.type;
     $('order').value = state.order;
+    $('chapter').value = state.chapter;
+    $('chapter-filter').hidden = state.subject !== '物理' || state.view === 'exam';
     $('type-filter').hidden = state.view === 'exam';
     $('order-filter').hidden = state.view === 'exam';
     document.querySelectorAll('[data-view]').forEach(button => {
@@ -90,12 +93,12 @@
       else button.removeAttribute('aria-current');
     });
   }
-  const sessionKey = () => [state.view, state.subject, state.type, state.order].join('|');
+  const sessionKey = () => [state.view, state.subject, state.type, state.order, ...(state.subject === '物理' ? [state.chapter] : [])].join('|');
   function practiceSession() {
     const key = sessionKey();
     let session = state.sessions[key];
     if (!session || !Array.isArray(session.ids) || !session.answers || typeof session.answers !== 'object') {
-      const pool = QUESTIONS.filter(q => q.subject === state.subject && (state.type === '全部' || q.type === state.type) && (state.view !== 'wrong' || state.wrong[q.id]));
+      const pool = QUESTIONS.filter(q => q.subject === state.subject && (state.subject !== '物理' || state.chapter === '全部' || String(q.chapter) === state.chapter) && (state.type === '全部' || q.type === state.type) && (state.view !== 'wrong' || state.wrong[q.id]));
       session = { ids: (state.order === 'random' ? shuffle(pool) : pool).map(q => q.id), index: 0, answers: {} };
       state.sessions[key] = session;
     }
@@ -107,7 +110,7 @@
     const exam = state.exams[state.subject];
     if (!exam) return null;
     // 题库内容改变后，不保留缺题的旧试卷。
-    if (!Array.isArray(exam.ids) || !exam.ids.length || exam.ids.some(id => !byId.has(id)) || !exam.answers || !['running', 'grading', 'complete'].includes(exam.phase)) {
+    if (!Array.isArray(exam.ids) || !exam.ids.length || exam.ids.some(id => !byId.has(id)) || !exam.answers || !['running', 'grading', 'complete'].includes(exam.phase) || (state.subject === '物理' && exam.structureVersion !== 2)) {
       delete state.exams[state.subject];
       return null;
     }
@@ -122,6 +125,7 @@
       <div class="feedback ${a.correct === false ? 'wrong' : ''}">${graded ? (a.correct ? '回答正确' : '本题需再巩固，已加入错题本') : '对照参考答案，完成自评'}</div>
       ${!q.verified ? '<p class="warning">本题待核实，参考答案和自评结果请结合教材确认。</p>' : ''}
       <p class="answer-label">参考答案</p><p>${h(objective(q) ? q.options[answerIndex(q)] : q.answer)}</p>
+      ${objective(q) && q.originalAnswer !== q.answer ? `<p>${h(q.originalAnswer)}</p>` : ''}
       <p class="answer-label">解析</p><p>${h(q.explanation)}</p>
       ${!objective(q) && !graded ? '<div class="actions"><button type="button" data-action="grade-wrong" class="danger">我答错了</button><button type="button" data-action="grade-correct" class="primary">我答对了</button></div>' : ''}
       ${graded && !exam ? '<div class="actions"><button type="button" data-action="retry">再练一次</button></div>' : ''}
@@ -139,8 +143,9 @@
     }).length;
     return `${exam ? `<div class="exam-status"><span>${running ? `作答中 · 已作答 ${answered} / ${session.ids.length}` : session.phase === 'grading' ? '已交卷 · 请自评主观题' : '试卷回顾'}</span><button type="button" data-action="${running ? 'submit-exam' : session.phase === 'complete' ? 'show-result' : 'next-ungraded'}">${running ? '交卷' : session.phase === 'complete' ? '查看成绩' : '前往待自评题'}</button></div>` : ''}
     <article class="question-card">
-      <div class="card-top"><span class="badge">${h(q.subject)}</span><span class="badge">${h(q.type)}</span>${!q.verified ? '<span class="badge pending">待核实</span>' : ''}<span class="position">第 ${session.index + 1} / ${session.ids.length} 题</span></div>
+      <div class="card-top"><span class="badge">${h(q.subject)}</span><span class="badge">${h(q.type)}</span>${q.subject === '物理' ? `${q.chapter != null ? `<span class="badge">第${h(q.chapter)}章</span>` : ''}${q.page != null ? `<span class="badge">第${h(q.page)}页</span>` : ''}` : ''}${!q.verified ? '<span class="badge pending">待核实</span>' : ''}<span class="position">第 ${session.index + 1} / ${session.ids.length} 题</span></div>
       <h2 class="question-text" tabindex="-1">${h(q.question)}</h2>
+      ${!objective(q) && ['单选', '判断'].includes(q.type) ? `<div class="self-options">${q.options.map(option => `<p>${h(option)}</p>`).join('')}</div><p class="small muted">本题对照参考答案自评。</p>` : ''}
       ${objective(q) ? `<div class="options">${q.options.map((option, i) => {
         const classes = ['option'];
         if (a.choice === i) classes.push('selected');
@@ -162,7 +167,7 @@
   function renderPractice() {
     const session = practiceSession();
     if (!session.ids.length) {
-      return `<section class="empty-card"><p class="eyebrow">${state.view === 'wrong' ? '给自己一点肯定' : '换个方向继续'}</p><h2>${state.view === 'wrong' ? '这里暂时没有错题' : '暂无符合条件的题目'}</h2><p class="muted">${state.view === 'wrong' ? '当前科目与题型没有待复习题目，继续保持。' : '请切换科目或题型再试。'}</p><button type="button" data-action="go-practice" class="primary">回到日常练习</button></section>`;
+      return `<section class="empty-card"><p class="eyebrow">${state.view === 'wrong' ? '给自己一点肯定' : '换个方向继续'}</p><h2>${state.view === 'wrong' ? '这里暂时没有错题' : '暂无符合条件的题目'}</h2><p class="muted">${state.view === 'wrong' ? '当前筛选条件下没有待复习题目，继续保持。' : '请切换科目、章节或题型再试。'}</p><button type="button" data-action="go-practice" class="primary">回到日常练习</button></section>`;
     }
     return questionHTML(session);
   }
@@ -176,9 +181,9 @@
       }
       return questionHTML(exam, true);
     }
-    const structure = EXAM_STRUCTURE[state.subject];
-    const count = Object.values(structure).reduce((a, b) => a + b, 0);
-    return `<section class="exam-card"><p class="eyebrow">认真练一次，心里更有底</p><h2>${h(state.subject)}模拟考</h2><p class="muted">按题型结构随机抽题，共 ${count} 题。</p><div class="exam-structure">${Object.entries(structure).map(([type, n]) => `<span>${h(type)} <strong>${n}</strong> 题</span>`).join('')}</div><p class="small muted">每题只出现一次。交卷后批改客观题，主观题对照答案自评。以答对题数统计成绩，不设置考试时限或分值权重。</p>${state.subject === '组织学' ? '<p class="small muted" style="margin-top:12px">计算、论述暂各抽 1 题；数量可在配置中调整。</p>' : ''}<div class="actions"><button type="button" data-action="start-exam" class="primary">开始模拟考</button></div><p class="source">试卷和作答自动保存在当前浏览器，可随时回来继续。</p></section>`;
+    const structure = examPlan();
+    const count = structure.reduce((total, group) => total + group.count, 0);
+    return `<section class="exam-card"><p class="eyebrow">认真练一次，心里更有底</p><h2>${h(state.subject)}模拟考</h2><p class="muted">按题型结构随机抽题，共 ${count} 题。</p><div class="exam-structure">${structure.map(({ type, count, target }) => `<span>${h(type)} <strong>${count}</strong> 题${count < target ? `（目标 ${target} 题）` : ''}</span>`).join('')}</div><p class="small muted">每题只出现一次。交卷后批改客观题，主观题对照答案自评。以答对题数统计成绩，不设置考试时限或分值权重。</p>${state.subject === '物理' ? '<p class="small muted" style="margin-top:12px">全章节抽题：单选目标 10 题、判断目标 10 题、大题目标 8 题。大题从计算、填空中混合抽取；各类题数量不足时全部选入，按实际题数统计。</p>' : ''}${state.subject === '组织学' ? '<p class="small muted" style="margin-top:12px">计算、论述暂各抽 1 题；数量可在配置中调整。</p>' : ''}<div class="actions"><button type="button" data-action="start-exam" class="primary">开始模拟考</button></div><p class="source">试卷和作答自动保存在当前浏览器，可随时回来继续。</p></section>`;
   }
   function render(focus = false) {
     setupFilters();
@@ -192,14 +197,20 @@
     save();
     if (focus) $('workspace').querySelector('.question-text')?.focus({ preventScroll: true });
   }
+  function examPlan() {
+    return Object.entries(EXAM_STRUCTURE[state.subject]).map(([type, target]) => {
+      const pool = QUESTIONS.filter(q => q.subject === state.subject && (type === '大题' ? ['计算', '填空'].includes(q.type) : q.type === type));
+      return { type, target, pool, count: state.subject === '物理' ? Math.min(target, pool.length) : target };
+    });
+  }
   function startExam() {
     const ids = [];
-    for (const [type, count] of Object.entries(EXAM_STRUCTURE[state.subject])) {
-      const pool = QUESTIONS.filter(q => q.subject === state.subject && q.type === type);
+    for (const { type, count, pool } of examPlan()) {
       if (pool.length < count) { notify(`${type}题不足：需要 ${count} 题，现有 ${pool.length} 题。请更新题库。`); return; }
       ids.push(...shuffle(pool).slice(0, count).map(q => q.id));
     }
-    state.exams[state.subject] = { ids, index: 0, answers: {}, phase: 'running', startedAt: Date.now(), review: false };
+    if (!ids.length) { notify('当前科目没有可用的模拟考试题目。'); return; }
+    state.exams[state.subject] = { ids, index: 0, answers: {}, phase: 'running', startedAt: Date.now(), review: false, structureVersion: 2 };
     render(true);
   }
   function finishGrading(exam) {
@@ -294,7 +305,7 @@
     }
     render();
   }));
-  for (const key of ['subject', 'type', 'order']) $(key).addEventListener('change', event => {
+  for (const key of ['subject', 'chapter', 'type', 'order']) $(key).addEventListener('change', event => {
     state[key] = event.target.value;
     render();
   });
