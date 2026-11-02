@@ -309,5 +309,31 @@
     state[key] = event.target.value;
     render();
   });
+
+  // 手动导出，仅从当前浏览器的保存记录读取；不自动上传。
+  $('export-wrong').addEventListener('click', async () => {
+    const wrongQuestions = QUESTIONS.filter(q => state.wrong[q.id]);
+    if (!wrongQuestions.length) { notify('当前没有待复习错题'); return; }
+    const lines = ['小栞题库：错题导出', '总数：' + wrongQuestions.length, '说明：主观题按用户自评，题库参考答案可能需要校验。'];
+    for (const [i,q] of wrongQuestions.entries()) {
+      const prior = [...Object.values(state.sessions), ...Object.values(state.exams)].map(s => s?.answers?.[q.id]).filter(a => a && a.correct === false);
+      const a = prior.find(v => typeof v.choice === 'number' || v.draft?.trim()) || prior[0];
+      const mine = typeof a?.choice === 'number' ? (q.options[a.choice] || String.fromCharCode(65+a.choice)) : a?.draft?.trim() || '未保存本次作答';
+      lines.push('', '【错题'+(i+1)+'】'+q.subject+'/'+q.type, 'ID：'+q.id, '题干：'+q.question);
+      if(q.options?.length)lines.push('选项：'+q.options.join(' | '));
+      lines.push('我的答案：'+mine,'参考答案：'+(q.originalAnswer || q.answer),'解析：'+q.explanation,'核实状态：'+(q.verified?'未标待核实':'待核实'));
+    }
+    const output = lines.join('\n');
+    try {
+      await navigator.clipboard.writeText(output);
+      notify('已复制 '+wrongQuestions.length+' 道错题，粘贴给小栞即可');
+    } catch (_) {
+      const area=document.createElement('textarea');
+      area.value=output;area.readOnly=true;
+      area.style.cssText='position:fixed;top:15%;left:5%;width:90%;height:65%;z-index:99999;background:white;color:black;';
+      document.body.appendChild(area);area.focus();area.select();
+      notify('请长按全选复制文字，再粘贴给小栞');
+    }
+  });
   render();
 })();
